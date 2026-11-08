@@ -235,7 +235,6 @@ PAIRS = [
     "CATIUSDT",
     "RENUSDT",
     "REPUSDT",
-    "SRMUSDT",
     "DOCKUSDT",
     "DUSKUSDT",
     "LAUSDT",
