@@ -109,7 +109,7 @@ PAIRS = [
     "MORPHOUSDT"
 ]
 # Khung thời gian: "1h" và "4h"
-TIMEFRAMES = ["1h", "4h"]
+TIMEFRAMES = ["1h"]
 
 # Thông số chỉ báo (giống cài đặt trên TradingView)
 ST_FACTOR = 12.0      # Supertrend Factor
