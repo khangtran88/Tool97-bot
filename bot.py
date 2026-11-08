@@ -767,8 +767,8 @@ PAIRS = [
 TIMEFRAMES = ["1h"]
 
 # Thông số chỉ báo (giống cài đặt trên TradingView)
-ST_FACTOR = 12.0      # Supertrend Factor
-ST_ATR_PERIOD = 90    # Supertrend ATR Period
+ST_FACTOR = 8.0      # Supertrend Factor
+ST_ATR_PERIOD = 30    # Supertrend ATR Period
 WMA_LENGTH = 40       # WMA Length
 EMA_LENGTH = 14       # EMA Length
 ATR_PERIOD = 14       # Volatility (ATR) period
