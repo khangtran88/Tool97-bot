@@ -1,80 +1,206 @@
-"""Bot Telegram báo Parabolic SAR đảo chiều (crypto, dữ liệu OKX, miễn phí)."""
+"""Bot Telegram báo AlgoAlpha Trend Targets đổi chiều xu hướng (Binance, miễn phí)."""
 import json
 import os
+import time
 import requests
 
 # ======================= CHỈNH Ở ĐÂY =======================
-# Danh sách cặp tiền (định dạng OKX: COIN-USDT)
-PAIRS = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+# Danh sách cặp tiền Binance (viết liền, không có dấu gạch): BTCUSDT, ETHUSDT...
+PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-# Khung thời gian: "1H" và "4H"
-# Thông số SAR cho từng khung: (bắt đầu, bước tăng, tối đa)
-# Mặc định chuẩn TradingView là (0.02, 0.02, 0.2)
-SAR_SETTINGS = {
-    "1H": (0.02, 0.02, 0.2),
-    "4H": (0.02, 0.02, 0.2),
-}
+# Khung thời gian: "1h" và "4h"
+TIMEFRAMES = ["1h", "4h"]
+
+# Thông số chỉ báo (giống cài đặt trên TradingView)
+ST_FACTOR = 12.0      # Supertrend Factor
+ST_ATR_PERIOD = 90    # Supertrend ATR Period
+WMA_LENGTH = 40       # WMA Length
+EMA_LENGTH = 14       # EMA Length
+ATR_PERIOD = 14       # Volatility (ATR) period
+SL_MULT = 5.0         # Stop Loss ATR Multiplier
+TP1_MULT = 0.5        # TP1 Multiplier
+TP2_MULT = 1.0        # TP2 Multiplier
+TP3_MULT = 1.5        # TP3 Multiplier
 # ===========================================================
 
+PAGES = 5  # số lần tải nến (mỗi lần 1000 nến) để chỉ báo tính đủ lịch sử
 STATE_FILE = "state.json"
+HOSTS = [
+    "https://data-api.binance.vision",
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api4.binance.com",
+    "https://api-gcp.binance.com",
+]
+_host = None
 
 
-def get_candles(pair, bar):
-    """Lấy tối đa 300 nến ĐÃ ĐÓNG, cũ -> mới. Mỗi nến: (ts, high, low, close)."""
-    url = "https://www.okx.com/api/v5/market/candles"
-    r = requests.get(url, params={"instId": pair, "bar": bar, "limit": 300}, timeout=20)
-    r.raise_for_status()
-    rows = r.json()["data"]  # mới -> cũ
-    out = []
-    for row in reversed(rows):
-        if row[8] != "1":  # bỏ nến đang chạy
+def _get(path, params):
+    """Gọi Binance, tự thử các địa chỉ dự phòng nếu bị chặn."""
+    global _host
+    order = ([_host] if _host else []) + [h for h in HOSTS if h != _host]
+    last = "không rõ"
+    for h in order:
+        try:
+            r = requests.get(h + path, params=params, timeout=20)
+        except requests.RequestException as e:
+            last = f"{h}: {e}"
             continue
-        out.append((int(row[0]), float(row[2]), float(row[3]), float(row[4])))
+        if r.status_code == 200:
+            _host = h
+            return r.json()
+        if r.status_code == 400:
+            raise ValueError(f"Cặp tiền không hợp lệ: {params.get('symbol')}")
+        last = f"{h}: HTTP {r.status_code}"
+    raise RuntimeError(last)
+
+
+def get_candles(symbol, interval):
+    """Lấy nến ĐÃ ĐÓNG, cũ -> mới. Mỗi nến: (ts, high, low, close)."""
+    now_ms = int(time.time() * 1000)
+    rows, end = [], None
+    for _ in range(PAGES):
+        params = {"symbol": symbol, "interval": interval, "limit": 1000}
+        if end:
+            params["endTime"] = end
+        page = _get("/api/v3/klines", params)
+        if not page:
+            break
+        rows = page + rows
+        end = page[0][0] - 1
+        if len(page) < 1000:
+            break
+    out = []
+    for r in rows:
+        if r[6] >= now_ms:  # bỏ nến đang chạy
+            continue
+        out.append((int(r[0]), float(r[2]), float(r[3]), float(r[4])))
     return out
 
 
-def psar(highs, lows, start, inc, maxaf):
-    """Trả về (danh sách xu hướng True=tăng, danh sách giá trị SAR)."""
-    n = len(highs)
-    up = highs[1] >= highs[0] if n > 1 else True
-    sar = lows[0] if up else highs[0]
-    ep = highs[0] if up else lows[0]
-    af = start
-    trends, sars = [up], [sar]
-    for i in range(1, n):
-        sar = sar + af * (ep - sar)
-        if up:
-            sar = min(sar, lows[i - 1], lows[i - 2] if i >= 2 else lows[i - 1])
-            if lows[i] < sar:  # đảo chiều sang giảm
-                up, sar, ep, af = False, ep, lows[i], start
-            elif highs[i] > ep:
-                ep, af = highs[i], min(af + inc, maxaf)
+def rma_atr(h, l, c, n):
+    """ta.atr của TradingView (RMA của True Range)."""
+    tr = []
+    for i in range(len(c)):
+        if i == 0:
+            tr.append(h[0] - l[0])
         else:
-            sar = max(sar, highs[i - 1], highs[i - 2] if i >= 2 else highs[i - 1])
-            if highs[i] > sar:  # đảo chiều sang tăng
-                up, sar, ep, af = True, ep, highs[i], start
-            elif lows[i] < ep:
-                ep, af = lows[i], min(af + inc, maxaf)
-        trends.append(up)
-        sars.append(sar)
-    return trends, sars
+            tr.append(max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])))
+    out = [None] * len(c)
+    if len(c) < n:
+        return out
+    prev = sum(tr[:n]) / n
+    out[n - 1] = prev
+    for i in range(n, len(c)):
+        prev = (prev * (n - 1) + tr[i]) / n
+        out[i] = prev
+    return out
 
 
-def find_flips(candles, params, last_ts):
-    """Tìm các lần đảo chiều ở nến mới hơn last_ts."""
-    highs = [c[1] for c in candles]
-    lows = [c[2] for c in candles]
-    trends, sars = psar(highs, lows, *params)
-    flips = []
-    for i in range(1, len(candles)):
-        if trends[i] != trends[i - 1]:
-            ts = candles[i][0]
-            if last_ts is None:
-                if i == len(candles) - 1:  # lần chạy đầu: chỉ xét nến mới nhất
-                    flips.append((ts, trends[i], candles[i][3], sars[i]))
-            elif ts > last_ts:
-                flips.append((ts, trends[i], candles[i][3], sars[i]))
-    return flips
+def wma(v, n):
+    out = [None] * len(v)
+    norm = n * (n + 1) / 2
+    for i in range(n - 1, len(v)):
+        w = v[i - n + 1:i + 1]
+        if None in w:
+            continue
+        out[i] = sum((k + 1) * x for k, x in enumerate(w)) / norm
+    return out
+
+
+def ema(v, n):
+    out = [None] * len(v)
+    a = 2 / (n + 1)
+    prev = None
+    for i in range(n - 1, len(v)):
+        if prev is None:
+            w = v[i - n + 1:i + 1]
+            if None in w:
+                continue
+            prev = sum(w) / n
+        elif v[i] is None:
+            prev = None
+            continue
+        else:
+            prev = a * v[i] + (1 - a) * prev
+        out[i] = prev
+    return out
+
+
+def supertrend_bands(h, l, c, factor, n):
+    """pine_supertrend() trong mã gốc: trả về (lowerBand, upperBand)."""
+    atr = rma_atr(h, l, c, n)
+    lo = [None] * len(c)
+    up = [None] * len(c)
+    for i in range(len(c)):
+        src = (h[i] + l[i]) / 2
+        a = atr[i]
+        lb = src - factor * a if a is not None else None
+        ub = src + factor * a if a is not None else None
+        pl = lo[i - 1] if i > 0 and lo[i - 1] is not None else 0.0
+        pu = up[i - 1] if i > 0 and up[i - 1] is not None else 0.0
+        cp = c[i - 1] if i > 0 else None
+        if (lb is not None and lb > pl) or (cp is not None and cp < pl):
+            lo[i] = lb
+        else:
+            lo[i] = pl
+        if (ub is not None and ub < pu) or (cp is not None and cp > pu):
+            up[i] = ub
+        else:
+            up[i] = pu
+    return lo, up
+
+
+def find_signals(candles):
+    """Trả về danh sách tín hiệu đổi chiều: (ts, hướng, entry, SL, TP1, TP2, TP3)."""
+    h = [x[1] for x in candles]
+    l = [x[2] for x in candles]
+    c = [x[3] for x in candles]
+    n = len(c)
+    lo, up = supertrend_bands(h, l, c, ST_FACTOR, ST_ATR_PERIOD)
+    mid = [(a + b) / 2 if a is not None and b is not None else None for a, b in zip(lo, up)]
+    tl = ema(wma(mid, WMA_LENGTH), EMA_LENGTH)
+    vol = rma_atr(h, l, c, ATR_PERIOD)
+
+    trend = [0] * n
+    cur = 0
+    for i in range(n):
+        if i >= 2 and tl[i] is not None and tl[i - 1] is not None and tl[i - 2] is not None:
+            if tl[i] > tl[i - 1] and tl[i - 1] <= tl[i - 2]:
+                cur = 1
+            if tl[i] < tl[i - 1] and tl[i - 1] >= tl[i - 2]:
+                cur = -1
+        trend[i] = cur
+
+    signals = []
+    for i in range(1, n):
+        prev = trend[i - 1]
+        if vol[i] is None:
+            continue
+        if trend[i] == 1 and prev <= 0:
+            sl = l[i] - vol[i] * SL_MULT
+            d = abs(c[i] - sl)
+            signals.append((candles[i][0], 1, c[i], sl,
+                            c[i] + d * TP1_MULT, c[i] + d * TP2_MULT, c[i] + d * TP3_MULT))
+        elif trend[i] == -1 and prev >= 0:
+            sl = h[i] + vol[i] * SL_MULT
+            d = abs(c[i] - sl)
+            signals.append((candles[i][0], -1, c[i], sl,
+                            c[i] - d * TP1_MULT, c[i] - d * TP2_MULT, c[i] - d * TP3_MULT))
+    return signals
+
+
+def pick_new(signals, candles, last_ts):
+    """Chỉ giữ tín hiệu mới chưa báo."""
+    if last_ts is None:  # lần chạy đầu: chỉ xét nến mới nhất
+        return [s for s in signals if s[0] == candles[-1][0]]
+    return [s for s in signals if s[0] > last_ts]
+
+
+def fmt(x):
+    return f"{x:.8g}"
 
 
 def send_telegram(text):
@@ -94,23 +220,39 @@ def main():
         with open(STATE_FILE) as f:
             state = json.load(f)
 
+    ok, fail, last_err = 0, 0, ""
     for pair in PAIRS:
-        for bar, params in SAR_SETTINGS.items():
-            key = f"{pair}_{bar}"
+        for tf in TIMEFRAMES:
+            key = f"{pair}_{tf}"
             try:
-                candles = get_candles(pair, bar)
-                if len(candles) < 20:
+                candles = get_candles(pair, tf)
+                if len(candles) < 300:
+                    print(f"Bỏ qua {key}: không đủ dữ liệu ({len(candles)} nến)")
                     continue
-                for ts, is_up, close, sar_val in find_flips(candles, params, state.get(key)):
-                    if is_up:
-                        msg = f"🟢 {pair} {bar}: SAR đảo sang TĂNG (MUA)"
+                for ts, d, entry, sl, t1, t2, t3 in pick_new(find_signals(candles), candles, state.get(key)):
+                    if d == 1:
+                        head = f"🟢 {pair} {tf.upper()}: XU HƯỚNG ĐỔI SANG TĂNG (MUA)"
                     else:
-                        msg = f"🔴 {pair} {bar}: SAR đảo sang GIẢM (BÁN)"
-                    msg += f"\nGiá đóng nến: {close}\nSAR: {sar_val:.6g}"
+                        head = f"🔴 {pair} {tf.upper()}: XU HƯỚNG ĐỔI SANG GIẢM (BÁN)"
+                    msg = (f"{head}\nEntry: {fmt(entry)}\nSL: {fmt(sl)}\n"
+                           f"TP1: {fmt(t1)}\nTP2: {fmt(t2)}\nTP3: {fmt(t3)}")
                     send_telegram(msg)
                 state[key] = candles[-1][0]
+                ok += 1
             except Exception as e:
+                fail += 1
+                last_err = str(e)
                 print(f"Lỗi {key}: {e}")
+
+    if ok == 0 and fail > 0:
+        if not state.get("_err"):
+            try:
+                send_telegram(f"⚠️ Bot không lấy được dữ liệu Binance.\n{last_err}")
+                state["_err"] = True
+            except Exception as e:
+                print(f"Lỗi gửi cảnh báo: {e}")
+    elif ok > 0:
+        state["_err"] = False
 
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
