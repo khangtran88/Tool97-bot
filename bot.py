@@ -7,12 +7,9 @@ import requests
 # ======================= CHỈNH Ở ĐÂY =======================
 # Danh sách cặp tiền Binance (viết liền, không có dấu gạch): BTCUSDT, ETHUSDT...
 PAIRS = [
-    "BTCUSDT",
-    "ETHUSDT",
     "ZECUSDT",
     "SOLUSDT",
     "XRPUSDT",
-    "BNBUSDT",
     "NEARUSDT",
     "ONEUSDT",
     "PEPEUSDT",
